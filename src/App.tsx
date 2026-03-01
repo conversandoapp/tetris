@@ -2,12 +2,12 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Hands, Results } from '@mediapipe/hands';
 import { Camera } from '@mediapipe/camera_utils';
 import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, Play, RotateCcw, Hand, Gamepad2 } from 'lucide-react';
+import { Trophy, Play, Pause, RotateCcw, Hand, Gamepad2 } from 'lucide-react';
 
 // --- TETRIS CONSTANTS ---
 const COLS = 12;
 const ROWS = 20;
-const BLOCK_SIZE = 30;
+const BLOCK_SIZE = 27;
 
 const PIECES = {
   I: [[0, 1, 0, 0], [0, 1, 0, 0], [0, 1, 0, 0], [0, 1, 0, 0]],
@@ -40,16 +40,21 @@ export default function App() {
   const [handX, setHandX] = useState<number | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [isCameraReady, setIsCameraReady] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [showCameraModal, setShowCameraModal] = useState(false);
 
   const gameStartedRef = useRef(false);
   const gameOverRef = useRef(false);
   const handXRef = useRef<number | null>(null);
+  const isPausedRef = useRef(false);
+  const animationFrameIdRef = useRef<number | null>(null);
 
   // Sync refs with state for the loop
   useEffect(() => {
     gameStartedRef.current = gameStarted;
     gameOverRef.current = gameOver;
-  }, [gameStarted, gameOver]);
+    isPausedRef.current = isPaused;
+  }, [gameStarted, gameOver, isPaused]);
 
   useEffect(() => {
     handXRef.current = handX;
@@ -137,12 +142,6 @@ export default function App() {
     drawMatrix(context, arenaRef.current, { x: 0, y: 0 });
     // Draw Player
     drawMatrix(context, playerRef.current.matrix, playerRef.current.pos);
-
-    // Draw Ghost Hand Indicator
-    if (handXRef.current !== null) {
-      context.fillStyle = 'rgba(255, 255, 255, 0.1)';
-      context.fillRect(handXRef.current * BLOCK_SIZE, 0, BLOCK_SIZE, canvas.height);
-    }
   }, []);
 
   const drawMatrix = (ctx: CanvasRenderingContext2D, matrix: Matrix, offset: { x: number; y: number }) => {
@@ -162,6 +161,7 @@ export default function App() {
 
   const update = useCallback((time = 0) => {
     if (!gameStartedRef.current || gameOverRef.current) return;
+    if (isPausedRef.current) return;
 
     const deltaTime = time - lastTimeRef.current;
     lastTimeRef.current = time;
@@ -179,7 +179,7 @@ export default function App() {
     }
 
     draw();
-    requestAnimationFrame(update);
+    animationFrameIdRef.current = requestAnimationFrame(update);
   }, [playerReset, arenaSweep, draw]);
 
   const requestCameraPermission = async () => {
@@ -189,6 +189,7 @@ export default function App() {
       // Stop the stream immediately, we just wanted the permission
       stream.getTracks().forEach(track => track.stop());
       setIsCameraReady(true);
+      setShowCameraModal(false);
       // The useEffect will handle starting the MediaPipe camera now that we have permission
     } catch (err: any) {
       console.error("Manual camera request error:", err);
@@ -205,9 +206,12 @@ export default function App() {
     navigator.permissions?.query({ name: 'camera' as PermissionName }).then((result) => {
       if (result.state === 'granted') {
         setIsCameraReady(true);
+      } else {
+        setShowCameraModal(true);
       }
     }).catch(() => {
-      // Fallback if permissions API is not supported
+      // Fallback if permissions API is not supported — show modal to be safe
+      setShowCameraModal(true);
     });
   }, []);
 
@@ -282,30 +286,108 @@ export default function App() {
     setScore(0);
     setGameOver(false);
     setGameStarted(true);
+    setIsPaused(false);
+    isPausedRef.current = false;
     playerReset();
     lastTimeRef.current = performance.now();
-    requestAnimationFrame(update);
+    animationFrameIdRef.current = requestAnimationFrame(update);
   };
 
+  const togglePause = useCallback(() => {
+    if (!gameStarted || gameOver) return;
+    if (isPaused) {
+      setIsPaused(false);
+      lastTimeRef.current = performance.now(); // prevent time-skip on resume
+      animationFrameIdRef.current = requestAnimationFrame(update);
+    } else {
+      setIsPaused(true);
+      if (animationFrameIdRef.current !== null) {
+        cancelAnimationFrame(animationFrameIdRef.current);
+        animationFrameIdRef.current = null;
+      }
+    }
+  }, [isPaused, gameStarted, gameOver, update]);
+
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-4 gap-8">
+    <div className="h-screen flex flex-col items-center justify-center p-3 gap-3 overflow-hidden">
+
+      {/* Blocking Camera Permission Modal */}
+      <AnimatePresence>
+        {showCameraModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-md"
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="flex flex-col items-center gap-6 p-10 rounded-2xl bg-zinc-900 border border-zinc-800 shadow-2xl max-w-sm w-full mx-4 text-center"
+            >
+              <div className="w-16 h-16 rounded-full bg-blue-500/20 flex items-center justify-center">
+                <Hand size={32} className="text-blue-400" />
+              </div>
+              <div className="space-y-2">
+                <h2 className="text-2xl font-bold">Cámara Requerida</h2>
+                <p className="text-zinc-400 text-sm">
+                  Este juego usa tu cámara para rastrear el movimiento de tu mano.
+                  Debes permitir el acceso para continuar.
+                </p>
+              </div>
+              {cameraError ? (
+                <div className="space-y-3 w-full">
+                  <p className="text-xs text-red-400 leading-relaxed">{cameraError}</p>
+                  <button
+                    onClick={requestCameraPermission}
+                    className="w-full px-6 py-3 bg-white text-black rounded-full font-bold hover:bg-blue-400 hover:text-white transition-all active:scale-95"
+                  >
+                    Intentar de Nuevo
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={requestCameraPermission}
+                  className="w-full px-6 py-3 bg-blue-500 text-white rounded-full font-bold hover:bg-blue-400 transition-all active:scale-95"
+                >
+                  Habilitar Cámara
+                </button>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Header */}
-      <div className="text-center space-y-2">
-        <h1 className="text-5xl font-bold tracking-tighter bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
+      <div className="flex items-center justify-between w-full max-w-3xl px-1">
+        <h1 className="text-2xl font-bold tracking-tighter bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
           TETRIS MOTION
         </h1>
-        <div className="flex items-center justify-center gap-4 text-zinc-400 text-sm font-mono uppercase tracking-widest">
+        <div className="flex items-center gap-3 text-zinc-400 text-xs font-mono uppercase tracking-widest">
           <div className="flex items-center gap-1">
-            <Hand size={14} /> Tracking Activo
+            <Hand size={12} /> Tracking
           </div>
           <div className="w-1 h-1 rounded-full bg-zinc-700" />
           <div className="flex items-center gap-1">
-            <Trophy size={14} /> Score: {score}
+            <Trophy size={12} /> {score}
           </div>
+          {gameStarted && !gameOver && (
+            <>
+              <div className="w-1 h-1 rounded-full bg-zinc-700" />
+              <button
+                onClick={togglePause}
+                className="flex items-center gap-1 px-3 py-1 rounded-full border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500 transition-all"
+              >
+                {isPaused ? <Play size={12} fill="currentColor" /> : <Pause size={12} />}
+                {isPaused ? 'REANUDAR' : 'PAUSA'}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
-      <div className="flex flex-col lg:flex-row gap-8 items-start">
+      <div className="flex flex-row gap-4 items-start">
         {/* Game Board */}
         <div className="relative group">
           <div className="absolute -inset-1 bg-gradient-to-r from-blue-500 to-emerald-500 rounded-lg blur opacity-25 group-hover:opacity-50 transition duration-1000"></div>
@@ -347,10 +429,31 @@ export default function App() {
               </motion.div>
             )}
           </AnimatePresence>
+
+          <AnimatePresence>
+            {isPaused && gameStarted && !gameOver && (
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 flex flex-col items-center justify-center bg-black/70 rounded-lg backdrop-blur-sm"
+              >
+                <Pause size={48} className="text-white/60 mb-4" />
+                <h2 className="text-2xl font-bold text-white mb-4">PAUSA</h2>
+                <button
+                  onClick={togglePause}
+                  className="flex items-center gap-2 px-8 py-3 bg-white text-black rounded-full font-bold hover:bg-blue-400 hover:text-white transition-all active:scale-95"
+                >
+                  <Play size={20} fill="currentColor" />
+                  REANUDAR
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Camera Feed & Controls */}
-        <div className="flex flex-col gap-6 w-full lg:w-80">
+        <div className="flex flex-col gap-4 w-72" style={{ maxHeight: ROWS * BLOCK_SIZE }}>
           <div className="relative rounded-2xl overflow-hidden border-2 border-zinc-800 bg-zinc-900 shadow-xl aspect-video">
             <video
               ref={videoRef}
@@ -359,44 +462,21 @@ export default function App() {
               playsInline
               muted
             />
-            
-            <AnimatePresence>
-              {!isCameraReady && !cameraError && (
-                <motion.div 
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center p-4 text-center z-20 backdrop-blur-sm"
-                >
-                  <div className="w-12 h-12 rounded-full bg-blue-500/20 flex items-center justify-center mb-3">
-                    <Hand size={24} className="text-blue-500" />
-                  </div>
-                  <p className="text-xs text-zinc-300 font-medium mb-4">
-                    Se requiere acceso a la cámara para jugar
-                  </p>
-                  <button 
-                    onClick={requestCameraPermission}
-                    className="px-6 py-2 bg-blue-500 text-white rounded-full text-[10px] font-bold uppercase tracking-widest hover:bg-blue-400 transition-colors"
-                  >
-                    Habilitar Cámara
-                  </button>
-                </motion.div>
-              )}
 
+            <AnimatePresence>
               {cameraError && (
-                <motion.div 
+                <motion.div
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-4 text-center z-20"
                 >
-                  <div className="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center mb-3">
-                    <Hand size={24} className="text-red-500" />
+                  <div className="w-10 h-10 rounded-full bg-red-500/20 flex items-center justify-center mb-3">
+                    <Hand size={20} className="text-red-500" />
                   </div>
-                  <p className="text-xs text-zinc-300 font-medium leading-relaxed">
-                    {cameraError}
-                  </p>
-                  <button 
+                  <p className="text-xs text-zinc-300 font-medium leading-relaxed">{cameraError}</p>
+                  <button
                     onClick={() => window.location.reload()}
-                    className="mt-4 text-[10px] uppercase tracking-widest font-bold text-zinc-500 hover:text-white transition-colors"
+                    className="mt-3 text-[10px] uppercase tracking-widest font-bold text-zinc-500 hover:text-white transition-colors"
                   >
                     Recargar Página
                   </button>
@@ -408,20 +488,20 @@ export default function App() {
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
               LIVE CAMERA
             </div>
-            
+
             {/* Hand Position Indicator Overlay */}
             {handX !== null && (
-              <div 
+              <div
                 className="absolute bottom-0 h-1 bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)] transition-all duration-75"
-                style={{ 
-                  left: `${(handX / COLS) * 100}%`, 
-                  width: `${(1 / COLS) * 100}%` 
+                style={{
+                  left: `${(handX / COLS) * 100}%`,
+                  width: `${(1 / COLS) * 100}%`
                 }}
               />
             )}
           </div>
 
-          <div className="p-6 rounded-2xl bg-zinc-900/50 border border-zinc-800 space-y-4">
+          <div className="p-4 rounded-2xl bg-zinc-900/50 border border-zinc-800 space-y-3 overflow-y-auto flex-1">
             <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-widest">Instrucciones</h3>
             <ul className="space-y-3 text-sm text-zinc-300">
               <li className="flex items-start gap-3">
