@@ -1,0 +1,5 @@
+{
+  "name": "Tetris por Movimiento",
+  "description": "Un juego de Tetris controlado por el movimiento de tus manos usando MediaPipe.",
+  "requestFramePermissions": ["camera"]
+}
